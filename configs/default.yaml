@@ -1,0 +1,45 @@
+seed: 1
+device: auto
+
+dataset:
+  name: kiba
+  path: data/kiba/
+  problem_type: 1
+  is_log: 0
+  max_smi_len: 100
+  max_seq_len: 1000
+  ligands_file: ligands_can.txt
+  proteins_file: proteins.txt
+  affinity_file: Y
+  encoding: label
+  aupr_threshold: 12.1
+
+model:
+  name: combined_categorical
+  embedding_dim: 128
+  num_filters: 32
+  smi_filter_length: 8
+  seq_filter_length: 12
+  dropout: 0.1
+  fc_dims: [1024, 1024, 512]
+  keras_init: true
+
+train:
+  epochs: 100
+  batch_size: 256
+  learning_rate: 0.001
+  weight_decay: 0.0
+  patience: 15
+  shuffle: false
+  num_workers: 0
+  restore_best_weights: false
+
+search:
+  num_windows: [32]
+  smi_window_lengths: [4, 8]
+  seq_window_lengths: [8, 12]
+
+paths:
+  log_dir: logs
+  checkpoint_dir: checkpoints
+  figure_dir: logs/figures

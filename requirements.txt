@@ -1,0 +1,11 @@
+# Runtime on Cheaha: torch + numpy only. Everything else is optional.
+numpy>=1.21
+torch>=2.0
+
+# Optional local extras (plots, nicer progress bars). Do not pip-build these
+# on Cheaha login nodes; use conda-forge wheels or skip them.
+# pyyaml>=5.4
+# tqdm>=4.64
+# scikit-learn>=1.0
+# pillow>=9.5,<11
+# matplotlib>=3.5,<3.10

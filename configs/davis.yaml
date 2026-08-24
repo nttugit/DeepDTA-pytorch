@@ -1,0 +1,45 @@
+seed: 1
+device: auto
+
+dataset:
+  name: davis
+  path: data/davis/
+  problem_type: 1
+  is_log: 1                # Y stores Kd in nM → pKd = -log10(Kd / 1e9)
+  max_smi_len: 85
+  max_seq_len: 1200
+  ligands_file: ligands_can.txt
+  proteins_file: proteins.txt
+  affinity_file: Y
+  encoding: label
+  aupr_threshold: 7.0      # paper: binders if pKd ≥ 7
+
+model:
+  name: combined_categorical
+  embedding_dim: 128
+  num_filters: 32
+  smi_filter_length: 4     # Davis default kernels differ from KIBA
+  seq_filter_length: 8
+  dropout: 0.1
+  fc_dims: [1024, 1024, 512]
+  keras_init: true
+
+train:
+  epochs: 100
+  batch_size: 256
+  learning_rate: 0.001
+  weight_decay: 0.0
+  patience: 15
+  shuffle: false
+  num_workers: 0
+  restore_best_weights: false
+
+search:
+  num_windows: [32]
+  smi_window_lengths: [4, 6, 8]
+  seq_window_lengths: [4, 8, 12]
+
+paths:
+  log_dir: logs
+  checkpoint_dir: checkpoints
+  figure_dir: logs/figures

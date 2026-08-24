@@ -1,0 +1,45 @@
+seed: 1
+device: auto
+
+dataset:
+  name: kiba
+  path: data/kiba/
+  problem_type: 1          # paper pair-split setting
+  is_log: 0                # Y is already the KIBA-transformed score; do not log again
+  max_smi_len: 100         # pad/truncate SMILES
+  max_seq_len: 1000        # pad/truncate protein
+  ligands_file: ligands_can.txt
+  proteins_file: proteins.txt
+  affinity_file: Y
+  encoding: label          # integer ids → Embedding; use onehot only with combined_onehot
+  aupr_threshold: 12.1     # binarize for AUPR (paper)
+
+model:
+  name: combined_categorical   # CNN-CNN + Embedding (main DeepDTA)
+  embedding_dim: 128
+  num_filters: 32          # first conv width n; later layers 2n, 3n
+  smi_filter_length: 8     # SMILES conv kernel
+  seq_filter_length: 12    # protein conv kernel
+  dropout: 0.1
+  fc_dims: [1024, 1024, 512]
+  keras_init: true
+
+train:
+  epochs: 100
+  batch_size: 256
+  learning_rate: 0.001
+  weight_decay: 0.0
+  patience: 15             # early stop on val MSE
+  shuffle: false           # paper DataLoader order
+  num_workers: 0
+  restore_best_weights: false  # last.pt = halt state; best.pt still stored
+
+search:
+  num_windows: [32]
+  smi_window_lengths: [4, 8]
+  seq_window_lengths: [8, 12]
+
+paths:
+  log_dir: logs
+  checkpoint_dir: checkpoints
+  figure_dir: logs/figures
