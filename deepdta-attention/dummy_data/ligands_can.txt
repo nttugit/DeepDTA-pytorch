@@ -1,0 +1,10 @@
+{
+  "D1": "CCOC1=CC=CC=C1C(=O)O",
+  "D2": "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",
+  "D3": "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O",
+  "D4": "NC1=NC=NC2=C1N=CN2C3OC(CO)C(O)C3O",
+  "D5": "CC1=C(C=CC=C1)NC2=NC=CC=N2",
+  "D6": "C1=CC=C(C=C1)C2=CC=CC=C2",
+  "D7": "CCC1=CC=C(C=C1)C(=O)O",
+  "D8": "COC1=CC=C(C=C1)CCN"
+}
