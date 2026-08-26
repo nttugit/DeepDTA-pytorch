@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=deepdta
+#SBATCH --job-name=deepdta-attn
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
-#SBATCH --mem=16G
+#SBATCH --mem=24G
 #SBATCH --partition=amperenodes
 #SBATCH --time=12:00:00
 # Submit via submit_train.sh so --output lands in the run directory.
@@ -64,3 +64,5 @@ if [[ "$CMD" == "experiment" ]]; then
 else
   "$PY" deepdta-attention/train.py train --fold "$FOLD" "${ARGS[@]}" "${ATTN_ARGS[@]}" ${EXTRA_ARGS:-}
 fi
+
+echo "Finished. Logs: $OUT/log.txt metrics: $OUT/metrics.json"
