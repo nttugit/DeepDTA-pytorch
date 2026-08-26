@@ -37,35 +37,31 @@ module reset
 module load Anaconda3
 eval "$(conda shell.bash hook)"
 conda activate "$ENV_NAME"
+unset PYTHONPATH
+export PYTHONNOUSERSITE=1
+PY="${CONDA_PREFIX}/bin/python"
 
-python - <<'PY'
-import torch, sys
+"$PY" - <<'PY'
+import sys
+import torch
+import torch.utils
+print("python", sys.executable)
 print("torch", torch.__version__, "cuda", torch.cuda.is_available())
 if not torch.cuda.is_available():
     sys.exit("CUDA is not available in this job")
 print("gpu", torch.cuda.get_device_name(0))
 PY
 
-DATA_FLAG=()
+# Bash 4.2 (Cheaha) errors on "${empty_array[@]}" when `set -u` is on.
+ARGS=(--dataset "$DATASET" --epochs "$EPOCHS" --out-dir "$OUT")
 if [[ -n "${DATA_DIR:-}" ]]; then
-  DATA_FLAG=(--data-dir "$DATA_DIR")
+  ARGS+=(--data-dir "$DATA_DIR")
 fi
 
 if [[ "$CMD" == "experiment" ]]; then
-  python -m deepdta experiment \
-    --dataset "$DATASET" \
-    --epochs "$EPOCHS" \
-    --out-dir "$OUT" \
-    "${DATA_FLAG[@]}" \
-    $EXTRA_ARGS
+  "$PY" -m deepdta experiment "${ARGS[@]}" ${EXTRA_ARGS:-}
 else
-  python -m deepdta train \
-    --dataset "$DATASET" \
-    --fold "$FOLD" \
-    --epochs "$EPOCHS" \
-    --out-dir "$OUT" \
-    "${DATA_FLAG[@]}" \
-    $EXTRA_ARGS
+  "$PY" -m deepdta train --fold "$FOLD" "${ARGS[@]}" ${EXTRA_ARGS:-}
 fi
 
 echo "Finished. Logs: $OUT/log.txt  metrics: $OUT/metrics.json"

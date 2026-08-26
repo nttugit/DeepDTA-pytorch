@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Create the conda env used by deepdta/ on Cheaha.
+# Create a clean conda env for deepdta/ on Cheaha.
 #
-# Do this on a GPU interactive job (Open OnDemand HPC Desktop / Jupyter, or
-# srun --pty), not on the login node. Do not run `conda init`.
+# The previous env can be a broken PyTorch install (import torch.utils fails).
+# This script removes that env and recreates it. Do not run `conda init`.
 #
 #   module reset
 #   module load Anaconda3
 #   bash deepdta/cheaha/setup_env.sh
+#
+# Login node is OK for this download. CUDA will show False there; the GPU job
+# is the real check.
 set -euo pipefail
 
 ENV_NAME="${ENV_NAME:-deepdta-pytorch}"
@@ -17,28 +20,39 @@ if ! command -v conda >/dev/null 2>&1; then
 fi
 
 eval "$(conda shell.bash hook)"
+unset PYTHONPATH
+export PYTHONNOUSERSITE=1
 
-if conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
-  echo "Env '$ENV_NAME' already exists; installing/updating packages."
-else
-  conda create -y -n "$ENV_NAME" python=3.10
-fi
+echo "Removing env '$ENV_NAME' if it exists (broken torch.utils installs are common)."
+conda deactivate >/dev/null 2>&1 || true
+conda env remove -n "$ENV_NAME" -y 2>/dev/null || true
 
+# Create a minimal env, then install official CUDA wheels. Mixing conda
+# pytorch + nvidia + conda-forge is what produced the incomplete torch.
+conda create -y -n "$ENV_NAME" python=3.10 pip numpy
 conda activate "$ENV_NAME"
-conda install -y pytorch pytorch-cuda=12.1 numpy tqdm -c pytorch -c nvidia -c conda-forge
+unset PYTHONPATH
+export PYTHONNOUSERSITE=1
 
-python - <<'PY'
+python -m pip install --upgrade pip
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu121
+python -m pip install tqdm
+
+PY="${CONDA_PREFIX}/bin/python"
+"$PY" - <<'PY'
 import torch
-print("torch", torch.__version__)
+import torch.utils
+print("python", __import__("sys").executable)
+print("torch", torch.__version__, "at", torch.__file__)
 print("cuda built", torch.version.cuda)
 print("cuda available", torch.cuda.is_available())
 if torch.cuda.is_available():
     print("gpu", torch.cuda.get_device_name(0))
 else:
-    print("WARNING: CUDA not visible. If you are on a login node this is expected;")
-    print("         re-run this check inside a GPU job after `conda activate`.")
+    print("NOTE: CUDA not visible (expected on a login node).")
 PY
 
 echo
 echo "Activate later with:"
 echo "  module reset && module load Anaconda3 && conda activate $ENV_NAME"
+echo "Then:  python -c 'import torch, torch.utils; print(torch.__version__, torch.cuda.is_available())'"
