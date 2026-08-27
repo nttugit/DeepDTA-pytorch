@@ -24,7 +24,12 @@ from deepdta.data import (
     paper_splits,
     resolve_data_path,
 )
-from deepdta_pretrain.embeddings import encoder_defaults, get_or_build
+from deepdta_pretrain.embeddings import (
+    encoder_defaults,
+    get_or_build,
+    get_or_build_fingerprint,
+    resolve_model_name,
+)
 
 __all__ = [
     "DATASETS",
@@ -61,6 +66,9 @@ class PLMData:
         protein_pool: str = "mean",
         max_smi_len: Optional[int] = None,
         max_prot_len: Optional[int] = None,
+        long_strategy: str = "truncate",
+        drug_fingerprint: str = "none",
+        fp_bits: int = 2048,
         device: Union[torch.device, str, None] = "auto",
         encode_batch_size: int = 8,
         rebuild_cache: bool = False,
@@ -97,6 +105,18 @@ class PLMData:
             batch_size=encode_batch_size,
             rebuild=rebuild_cache,
         )
+        if drug_fingerprint and drug_fingerprint != "none":
+            fp, fp_meta = get_or_build_fingerprint(
+                dataset=dataset,
+                keys=self.drug_keys,
+                smiles=self.smiles,
+                n_bits=fp_bits,
+                rebuild=rebuild_cache,
+            )
+            # Concatenating keeps the model unchanged: drug_dim just grows.
+            self.drug_emb = np.concatenate([self.drug_emb, fp], axis=1)
+            self.drug_meta = {**self.drug_meta, "fingerprint": fp_meta, "dim": self.drug_emb.shape[1]}
+
         self.protein_emb, self.protein_meta = get_or_build(
             dataset=dataset,
             kind="protein",
@@ -108,6 +128,8 @@ class PLMData:
             device=device,
             batch_size=encode_batch_size,
             rebuild=rebuild_cache,
+            # Only proteins overflow the encoder; SMILES top out near 94 tokens.
+            long_strategy=long_strategy,
         )
 
         rows, cols = np.where(~np.isnan(self.Y))
@@ -184,6 +206,9 @@ def load_dataset(
     protein_pool: str = "mean",
     max_smi_len: Optional[int] = None,
     max_prot_len: Optional[int] = None,
+    long_strategy: str = "truncate",
+    drug_fingerprint: str = "none",
+    fp_bits: int = 2048,
     device: Union[torch.device, str, None] = "auto",
     encode_batch_size: int = 8,
     rebuild_cache: bool = False,
@@ -193,8 +218,10 @@ def load_dataset(
     spec = dict(DATASETS[name])
     if data_dir is not None:
         spec["path"] = str(data_dir)
-    spec["drug_model"] = drug_model or encoder_defaults("drug")["hf_name"]
-    spec["protein_model"] = protein_model or encoder_defaults("protein")["hf_name"]
+    spec["drug_model"] = resolve_model_name(drug_model, "drug") or encoder_defaults("drug")["hf_name"]
+    spec["protein_model"] = (
+        resolve_model_name(protein_model, "protein") or encoder_defaults("protein")["hf_name"]
+    )
     raw = PLMData(
         dataset=name,
         dataset_path=resolve_data_path(spec["path"]),
@@ -205,6 +232,9 @@ def load_dataset(
         protein_pool=protein_pool,
         max_smi_len=max_smi_len,
         max_prot_len=max_prot_len,
+        long_strategy=long_strategy,
+        drug_fingerprint=drug_fingerprint,
+        fp_bits=fp_bits,
         device=device,
         encode_batch_size=encode_batch_size,
         rebuild_cache=rebuild_cache,

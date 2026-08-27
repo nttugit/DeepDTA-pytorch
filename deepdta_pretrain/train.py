@@ -16,6 +16,7 @@ import torch
 
 from deepdta.metrics import evaluate_all
 from deepdta.train import (
+    LR_SCHEDULES,
     Logger,
     get_device,
     load_checkpoint,
@@ -32,19 +33,50 @@ from deepdta_pretrain.data import (
     make_loader,
     paper_splits,
 )
-from deepdta_pretrain.embeddings import ENCODERS, encode_texts, encoder_defaults
+from deepdta_pretrain.embeddings import (
+    ENCODERS,
+    FINGERPRINTS,
+    LONG_STRATEGIES,
+    PRESETS,
+    encode_ecfp,
+    encode_texts,
+    encoder_defaults,
+    resolve_model_name,
+)
 from deepdta_pretrain.model import HIDDEN, DeepDTAPretrain
 
 
 def _add_encoder_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dataset", type=str, default="kiba", choices=sorted(DATASETS))
     parser.add_argument("--data-dir", type=str, default=None)
-    parser.add_argument("--drug-model", type=str, default=ENCODERS["drug"]["hf_name"])
-    parser.add_argument("--protein-model", type=str, default=ENCODERS["protein"]["hf_name"])
+    presets = ", ".join(sorted(PRESETS))
+    parser.add_argument(
+        "--drug-model", type=str, default=ENCODERS["drug"]["hf_name"],
+        help=f"HuggingFace id or preset alias ({presets})",
+    )
+    parser.add_argument(
+        "--protein-model", type=str, default=ENCODERS["protein"]["hf_name"],
+        help=f"HuggingFace id or preset alias ({presets})",
+    )
     parser.add_argument("--drug-pool", type=str, default="mean", choices=["mean", "cls"])
     parser.add_argument("--protein-pool", type=str, default="mean", choices=["mean", "max"])
     parser.add_argument("--max-smi-len", type=int, default=ENCODERS["drug"]["max_len"])
     parser.add_argument("--max-prot-len", type=int, default=ENCODERS["protein"]["max_len"])
+    parser.add_argument(
+        "--long-strategy",
+        type=str,
+        default="truncate",
+        choices=list(LONG_STRATEGIES),
+        help="How to handle proteins longer than the encoder limit",
+    )
+    parser.add_argument(
+        "--drug-fingerprint",
+        type=str,
+        default="none",
+        choices=list(FINGERPRINTS),
+        help="Concatenate an ECFP bit vector onto the ChemBERTa vector (needs rdkit)",
+    )
+    parser.add_argument("--fp-bits", type=int, default=2048)
     parser.add_argument("--encode-batch-size", type=int, default=8)
     parser.add_argument("--encode-device", type=str, default="auto")
     parser.add_argument("--rebuild-cache", action="store_true")
@@ -56,14 +88,22 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--dropout", type=float, default=0.2)
 
 
 def _add_optim(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--patience", type=int, default=15)
-    parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--lr-schedule", type=str, default="plateau", choices=list(LR_SCHEDULES))
+    parser.add_argument("--grad-clip", type=float, default=1.0, help="0 disables clipping")
+    parser.add_argument(
+        "--normalize-target",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Standardise affinities using train-split statistics",
+    )
     parser.add_argument("--out-dir", type=str, default=None)
 
 
@@ -97,6 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
     pred_p.add_argument("--protein-pool", type=str, default=None, choices=["mean", "max"])
     pred_p.add_argument("--max-smi-len", type=int, default=None)
     pred_p.add_argument("--max-prot-len", type=int, default=None)
+    pred_p.add_argument("--long-strategy", type=str, default=None, choices=list(LONG_STRATEGIES))
 
     exp_p = sub.add_parser("experiment", help="Paper test protocol: 5 train folds, same test set")
     _add_common(exp_p)
@@ -114,18 +155,39 @@ def _load_dataset(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
         protein_pool=args.protein_pool,
         max_smi_len=args.max_smi_len,
         max_prot_len=args.max_prot_len,
+        long_strategy=args.long_strategy,
+        drug_fingerprint=args.drug_fingerprint,
+        fp_bits=args.fp_bits,
         device=args.encode_device,
         encode_batch_size=args.encode_batch_size,
         rebuild_cache=args.rebuild_cache,
     )
 
 
-def _make_model(args: argparse.Namespace, spec: dict[str, Any]) -> DeepDTAPretrain:
-    return DeepDTAPretrain(
+def _make_model(
+    args: argparse.Namespace,
+    spec: dict[str, Any],
+    train_targets: Any = None,
+) -> DeepDTAPretrain:
+    model = DeepDTAPretrain(
         drug_dim=spec["drug_dim"],
         prot_dim=spec["protein_dim"],
         dropout=args.dropout,
     )
+    if getattr(args, "normalize_target", False) and train_targets is not None:
+        model.set_target_stats(float(np.mean(train_targets)), float(np.std(train_targets)))
+    return model
+
+
+def _load_best(model: DeepDTAPretrain, checkpoint_dir: Path, logger: Any) -> None:
+    """Evaluate the early-stopping winner, not the weights `patience` epochs later."""
+    path = checkpoint_dir / "best.pt"
+    if not path.exists():
+        logger(f"WARNING: {path} missing, evaluating the last epoch instead")
+        return
+    ckpt = load_checkpoint(path, map_location="cpu")
+    model.load_state_dict(ckpt["model_state"] if "model_state" in ckpt else ckpt)
+    logger(f"Loaded best.pt (epoch {ckpt.get('epoch')}, val MSE {ckpt.get('val_loss')})")
 
 
 def _model_cfg(args: argparse.Namespace, spec: dict[str, Any]) -> dict[str, Any]:
@@ -187,7 +249,7 @@ def _warn_encoder_mismatch(
     if not saved:
         return
     for kind in ("drug", "protein"):
-        for key in ("hf_name", "pool", "max_len"):
+        for key in ("hf_name", "pool", "max_len", "long_strategy"):
             was = (saved.get(kind) or {}).get(key)
             now = (current.get(kind) or {}).get(key)
             if was is not None and was != now:
@@ -198,12 +260,24 @@ def cmd_precompute(args: argparse.Namespace) -> None:
     raw, spec = _load_dataset(args)
     print(f"Dataset {args.dataset}: drugs={raw.n_drugs} proteins={raw.n_proteins}")
     for kind, meta in raw.encoder_cfg().items():
-        print(
+        line = (
             f"{kind}: {meta['hf_name']} dim={meta['dim']} pool={meta['pool']} "
             f"max_len={meta['max_len']} truncated={meta['n_truncated']}/{meta['n_texts']} "
             f"token_len(min/mean/max)={meta['token_len_min']}/"
             f"{meta['token_len_mean']:.1f}/{meta['token_len_max']}"
         )
+        if meta.get("long_strategy") == "window":
+            line += (
+                f" windowed={meta['n_windowed']}/{meta['n_texts']} "
+                f"windows={meta['n_windows_total']} max_per_text={meta['n_windows_max']}"
+            )
+        if meta.get("fingerprint"):
+            fp = meta["fingerprint"]
+            line += (
+                f" + {fp['fingerprint']}({fp['n_bits']} bits, "
+                f"{fp['bits_on_mean']:.1f} on avg, {fp['n_failed']} unparsed)"
+            )
+        print(line)
     print(f"MLP input dim: {spec['drug_dim']} + {spec['protein_dim']} = "
           f"{spec['drug_dim'] + spec['protein_dim']}")
 
@@ -222,8 +296,9 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     train_loader = make_loader(raw, split["train"], args.batch_size, shuffle=True, num_workers=args.num_workers)
     eval_loader = make_loader(raw, split[args.eval_on], args.batch_size, shuffle=False, num_workers=args.num_workers)
-    model = _make_model(args, spec)
+    model = _make_model(args, spec, raw.pair_arrays(split["train"])[2])
     logger.log(model)
+    logger.log(f"Target stats: mean={float(model.target_mean):.5f} std={float(model.target_std):.5f}")
 
     result = train_one_run(
         model=model,
@@ -236,9 +311,13 @@ def cmd_train(args: argparse.Namespace) -> None:
         checkpoint_dir=ckpt_dir,
         logger=logger,
         weight_decay=args.weight_decay,
+        lr_schedule=args.lr_schedule,
+        grad_clip=args.grad_clip,
     )
     _annotate_checkpoints(ckpt_dir, {"encoder_cfg": raw.encoder_cfg(), "model_cfg": _model_cfg(args, spec)})
 
+    _load_best(model, ckpt_dir, logger.log)
+    model.to(device)
     y_true, y_pred = predict_loader(model, eval_loader, device)
     metrics = evaluate_all(y_true, y_pred, spec["aupr_threshold"])
     logger.log(metrics)
@@ -247,6 +326,8 @@ def cmd_train(args: argparse.Namespace) -> None:
             "args": vars(args),
             "encoder_cfg": raw.encoder_cfg(),
             "metrics": metrics,
+            "best_epoch": result["best_epoch"],
+            "best_val_loss": result["best_val_loss"],
             "history": result["history"],
         },
         log_dir / "metrics.json",
@@ -287,12 +368,17 @@ def cmd_predict(args: argparse.Namespace) -> None:
 
     drug_spec = encoder_defaults("drug")
     prot_spec = encoder_defaults("protein")
-    drug_model = _pick("drug", "hf_name", args.drug_model, drug_spec["hf_name"])
-    prot_model = _pick("protein", "hf_name", args.protein_model, prot_spec["hf_name"])
+    drug_model = resolve_model_name(
+        _pick("drug", "hf_name", args.drug_model, drug_spec["hf_name"]), "drug"
+    )
+    prot_model = resolve_model_name(
+        _pick("protein", "hf_name", args.protein_model, prot_spec["hf_name"]), "protein"
+    )
     drug_pool = _pick("drug", "pool", args.drug_pool, "mean")
     prot_pool = _pick("protein", "pool", args.protein_pool, "mean")
     max_smi_len = _pick("drug", "max_len", args.max_smi_len, drug_spec["max_len"])
     max_prot_len = _pick("protein", "max_len", args.max_prot_len, prot_spec["max_len"])
+    long_strategy = _pick("protein", "long_strategy", args.long_strategy, "truncate")
 
     drug_emb, _ = encode_texts(
         [args.smiles], hf_name=drug_model, max_len=max_smi_len, pool=drug_pool,
@@ -300,8 +386,16 @@ def cmd_predict(args: argparse.Namespace) -> None:
     )
     prot_emb, _ = encode_texts(
         [args.protein], hf_name=prot_model, max_len=max_prot_len, pool=prot_pool,
-        device=device, batch_size=1, show_progress=False,
+        device=device, batch_size=1, show_progress=False, long_strategy=long_strategy,
     )
+
+    # The checkpoint was trained on ChemBERTa+ECFP, so rebuild the same layout.
+    fp_meta = (saved.get("drug") or {}).get("fingerprint")
+    if fp_meta:
+        fp, _ = encode_ecfp(
+            [args.smiles], n_bits=fp_meta.get("n_bits", 2048), radius=fp_meta.get("radius", 2)
+        )
+        drug_emb = np.concatenate([drug_emb, fp], axis=1)
 
     model = DeepDTAPretrain(
         drug_dim=cfg.get("drug_dim", drug_emb.shape[1]),
@@ -333,19 +427,24 @@ def cmd_experiment(args: argparse.Namespace) -> None:
     logger.log(f"Encoders: {raw.encoder_cfg()}")
     logger.log(f"Drugs={raw.n_drugs} proteins={raw.n_proteins} labeled={len(raw.label_row_inds)}")
 
-    test_ci, test_mse = [], []
+    test_ci, test_mse, val_mse = [], [], []
     for split in splits:
         fold = split["fold"]
-        logger.log(f"Fold {fold}: train={len(split['train'])} test={len(split['test'])}")
+        logger.log(
+            f"Fold {fold}: train={len(split['train'])} val={len(split['val'])} "
+            f"test={len(split['test'])}"
+        )
         set_seed(args.seed)
         train_loader = make_loader(raw, split["train"], args.batch_size, shuffle=True, num_workers=args.num_workers)
+        val_loader = make_loader(raw, split["val"], args.batch_size, shuffle=False, num_workers=args.num_workers)
         test_loader = make_loader(raw, split["test"], args.batch_size, shuffle=False, num_workers=args.num_workers)
-        model = _make_model(args, spec)
+        model = _make_model(args, spec, raw.pair_arrays(split["train"])[2])
         fold_ckpt = ckpt_dir / f"fold{fold}"
+        # Early stopping selects on val; test is only ever read for reporting.
         train_one_run(
             model=model,
             train_loader=train_loader,
-            val_loader=test_loader,
+            val_loader=val_loader,
             device=device,
             epochs=args.epochs,
             learning_rate=args.lr,
@@ -353,27 +452,46 @@ def cmd_experiment(args: argparse.Namespace) -> None:
             checkpoint_dir=fold_ckpt,
             logger=logger,
             weight_decay=args.weight_decay,
+            lr_schedule=args.lr_schedule,
+            grad_clip=args.grad_clip,
         )
         _annotate_checkpoints(fold_ckpt, {"encoder_cfg": raw.encoder_cfg(), "model_cfg": _model_cfg(args, spec)})
+
+        _load_best(model, fold_ckpt, logger.log)
+        model.to(device)
+        v_true, v_pred = predict_loader(model, val_loader, device)
         y_true, y_pred = predict_loader(model, test_loader, device)
+        v_metrics = evaluate_all(v_true, v_pred, spec["aupr_threshold"])
         metrics = evaluate_all(y_true, y_pred, spec["aupr_threshold"])
         logger.log(
-            "Fold=%d CI=%.5f MSE=%.5f rm2=%.5f AUPR=%.5f"
-            % (fold, metrics["ci"], metrics["mse"], metrics["rm2"], metrics["aupr"])
+            "Fold=%d val CI=%.5f MSE=%.5f | test CI=%.5f MSE=%.5f rm2=%.5f AUPR=%.5f"
+            % (
+                fold,
+                v_metrics["ci"],
+                v_metrics["mse"],
+                metrics["ci"],
+                metrics["mse"],
+                metrics["rm2"],
+                metrics["aupr"],
+            )
         )
         test_ci.append(metrics["ci"])
         test_mse.append(metrics["mse"])
+        val_mse.append(v_metrics["mse"])
         del model
 
     avg_ci, avg_mse = float(np.mean(test_ci)), float(np.mean(test_mse))
     std_ci = float(np.std(test_ci))
     logger.log("---FINAL RESULTS-----")
+    logger.log(f"Val MSE: {val_mse}")
     logger.log(f"Test CI: {test_ci}")
     logger.log(f"Test MSE: {test_mse}")
     logger.log("avg_perf = %.5f,  avg_mse = %.5f, std = %.5f" % (avg_ci, avg_mse, std_ci))
     save_json(
         {
+            "args": vars(args),
             "encoder_cfg": raw.encoder_cfg(),
+            "val_mse": val_mse,
             "test_ci": test_ci,
             "test_mse": test_mse,
             "avg_ci": avg_ci,

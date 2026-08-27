@@ -8,6 +8,9 @@ torch>=2.0
 # With an older torch, pin transformers==4.51.3.
 transformers>=4.30,<5
 
+# Required only by deepdta_pretrain --drug-fingerprint ecfp4.
+rdkit>=2023.3
+
 # Optional local extras (plots, nicer progress bars). Do not pip-build these
 # on Cheaha login nodes; use conda-forge wheels or skip them.
 # pyyaml>=5.4

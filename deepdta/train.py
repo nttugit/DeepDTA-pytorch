@@ -109,6 +109,23 @@ class Logger:
             handle.write(text + "\n")
 
 
+LR_SCHEDULES = ("none", "plateau", "cosine")
+
+
+def _make_scheduler(optimizer: torch.optim.Optimizer, kind: str, epochs: int):
+    """``None`` for ``kind='none'`` so the baseline keeps a constant learning rate."""
+    kind = (kind or "none").lower()
+    if kind == "none":
+        return None
+    if kind == "plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-5
+        )
+    if kind == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
+    raise ValueError(f"Unknown lr_schedule {kind!r}. Choose from {list(LR_SCHEDULES)}")
+
+
 def train_one_run(
     model: nn.Module,
     train_loader: DataLoader,
@@ -120,13 +137,17 @@ def train_one_run(
     checkpoint_dir: Optional[Path] = None,
     logger: Optional[Logger] = None,
     weight_decay: float = 0.0,
+    lr_schedule: str = "none",
+    grad_clip: float = 0.0,
 ) -> dict[str, Any]:
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     criterion = nn.MSELoss()
+    scheduler = _make_scheduler(optimizer, lr_schedule, epochs)
 
     history = {"loss": [], "val_loss": [], "ci": [], "val_ci": []}
     best_val = float("inf")
+    best_epoch = 0
     stale = 0
     stopped_epoch = epochs
 
@@ -142,6 +163,8 @@ def train_one_run(
             pred = model(batch["drug"], batch["protein"])
             loss = criterion(pred, batch["affinity"])
             loss.backward()
+            if grad_clip > 0:
+                nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
             bs = batch["affinity"].size(0)
             running += loss.item() * bs
@@ -171,8 +194,23 @@ def train_one_run(
         else:
             print(msg)
 
+        if scheduler is not None:
+            prev_lr = optimizer.param_groups[0]["lr"]
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(val_loss)
+            else:
+                scheduler.step()
+            new_lr = optimizer.param_groups[0]["lr"]
+            if new_lr != prev_lr:
+                lr_msg = f"  lr {prev_lr:.2e} -> {new_lr:.2e}"
+                if logger is not None:
+                    logger.log(lr_msg)
+                else:
+                    print(lr_msg)
+
         if val_loss < best_val:
             best_val = val_loss
+            best_epoch = epoch
             stale = 0
             if checkpoint_dir is not None:
                 save_checkpoint(
@@ -205,10 +243,17 @@ def train_one_run(
             checkpoint_dir / "last.pt",
         )
 
+    summary = f"Best val MSE {best_val:.5f} @ epoch {best_epoch} (last epoch {stopped_epoch})"
+    if logger is not None:
+        logger.log(summary)
+    else:
+        print(summary)
+
     return {
         "history": history,
         "stopped_epoch": stopped_epoch,
         "best_val_loss": best_val,
+        "best_epoch": best_epoch,
     }
 
 
