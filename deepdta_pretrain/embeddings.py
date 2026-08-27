@@ -84,6 +84,32 @@ def cls_pool(hidden: torch.Tensor) -> torch.Tensor:
     return hidden[:, 0]
 
 
+def content_length_cap(config: Any, tokenizer: Any, n_special: int) -> Optional[int]:
+    """Largest number of content tokens the model can actually embed.
+
+    ChemBERTa (RoBERTa) is the reason this exists: its position embedding table
+    holds 515 rows but RoBERTa offsets position ids by ``pad_token_id + 1``, so a
+    514-token input indexes row 515 and raises ``IndexError: index out of range
+    in self``. ESM-2 uses rotary embeddings and is not bounded this way.
+    """
+    caps: list[int] = []
+
+    limit = getattr(config, "max_position_embeddings", None)
+    if limit:
+        if getattr(config, "position_embedding_type", "absolute") == "absolute":
+            limit -= (getattr(config, "pad_token_id", None) or 0) + 1
+        caps.append(int(limit))
+
+    # ESM sets this to a sentinel (~1e30) meaning "unbounded"; ignore that.
+    model_max = getattr(tokenizer, "model_max_length", None)
+    if isinstance(model_max, int) and 0 < model_max < 1_000_000:
+        caps.append(model_max)
+
+    if not caps:
+        return None
+    return max(1, min(caps) - n_special)
+
+
 def encode_texts(
     texts: Sequence[str],
     hf_name: str,
@@ -112,6 +138,14 @@ def encode_texts(
     model.eval()
 
     n_special = tokenizer.num_special_tokens_to_add(pair=False)
+    requested_max_len = int(max_len)
+    cap = content_length_cap(model.config, tokenizer, n_special)
+    if cap is not None and max_len > cap:
+        print(
+            f"[deepdta_pretrain] {hf_name} supports at most {cap} content tokens; "
+            f"clamping max_len {max_len} -> {cap}"
+        )
+        max_len = cap
     max_length = max_len + n_special
 
     # One untruncated pass: exact token lengths for stats and length-sorted batching.
@@ -157,6 +191,7 @@ def encode_texts(
         "dim": int(model.config.hidden_size),
         "pool": pool,
         "max_len": int(max_len),
+        "max_len_requested": requested_max_len,
         "max_length_with_special": int(max_length),
         "n_texts": int(len(texts)),
         "n_truncated": n_truncated,

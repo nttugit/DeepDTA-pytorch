@@ -119,9 +119,10 @@ def train_one_run(
     patience: int = 15,
     checkpoint_dir: Optional[Path] = None,
     logger: Optional[Logger] = None,
+    weight_decay: float = 0.0,
 ) -> dict[str, Any]:
     model = model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     criterion = nn.MSELoss()
 
     history = {"loss": [], "val_loss": [], "ci": [], "val_ci": []}
@@ -190,6 +191,9 @@ def train_one_run(
                 if logger is not None:
                     logger.log(f"Early stopping at epoch {epoch} (patience={patience})")
                 break
+
+    # =============================== End of one epoch training ===============================
+
 
     if checkpoint_dir is not None:
         save_checkpoint(

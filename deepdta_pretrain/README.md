@@ -104,6 +104,8 @@ Nghĩa là 1/4 protein Davis bị mất phần cuối. Số bị cắt được 
 
 `--max-prot-len` để dạng flag chính vì lý do đó, nhưng tăng quá 1022 sẽ vượt position embedding của ESM-2.
 
+Phía drug, `--max-smi-len` cũng bị chặn tự động theo giới hạn thật của model. ChemBERTa là RoBERTa nên position id bị dịch thêm `pad_token_id + 1`: bảng position embedding có 515 dòng nhưng input 514 token sẽ index tới dòng 515 và crash `IndexError: index out of range in self`. `content_length_cap()` tính giới hạn này từ config và clamp xuống 510 content token, có in thông báo khi clamp. KIBA có 1/2111 SMILES dài 592 token nên chạm đúng giới hạn này (Davis dài nhất 94 token, không ảnh hưởng).
+
 ## Metrics
 
 Giống paper: CI, MSE, rm², AUPR (ngưỡng pKd ≥ 7 cho Davis, KIBA ≥ 12.1). Mốc CNN–CNN của paper (average 5 fold):
@@ -125,8 +127,22 @@ python -m deepdta_pretrain train --dataset davis --fold 0   # ESM-2 + ChemBERTa
 `torch`, `numpy`, `transformers`. `tqdm` tùy chọn.
 
 ```bash
-pip install transformers
+pip install "transformers>=4.30,<5"
 ```
+
+### Nếu torch < 2.6
+
+ChemBERTa trên HuggingFace chỉ có `pytorch_model.bin`, không có `model.safetensors` (ESM-2 thì có). Từ transformers 4.52.0, việc `torch.load` một file `.bin` bị chặn nếu torch < 2.6 do CVE-2025-32434:
+
+```
+ValueError: Due to a serious vulnerability issue in `torch.load` ... we now require
+users to upgrade torch to at least v2.6
+```
+
+Hai cách xử lý:
+
+- Giữ torch cũ → `pip install "transformers==4.51.3"` (bản cuối chưa có check này).
+- Hoặc nâng torch >= 2.6. Lưu ý torch 2.6 không có build `cu121`, phải dùng `cu124`/`cu126`.
 
 ## Cheaha (UAB HPC)
 

@@ -17,5 +17,7 @@ checkpoints/*
 !checkpoints/.gitkeep
 logs/figures/
 *.png
+cache/
 .ipynb_checkpoints/
 /scripts
+/test.py

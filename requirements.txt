@@ -2,6 +2,12 @@
 numpy>=1.21
 torch>=2.0
 
+# Required only by deepdta_pretrain/ (ESM-2 + ChemBERTa embeddings).
+# ChemBERTa ships weights as pytorch_model.bin only, and transformers >= 4.52
+# refuses to torch.load .bin files unless torch >= 2.6 (CVE-2025-32434).
+# With an older torch, pin transformers==4.51.3.
+transformers>=4.30,<5
+
 # Optional local extras (plots, nicer progress bars). Do not pip-build these
 # on Cheaha login nodes; use conda-forge wheels or skip them.
 # pyyaml>=5.4
