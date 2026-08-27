@@ -27,7 +27,8 @@ EXTRA_ARGS=""
 RUNS_ROOT=""
 DRUG_MODEL=""
 PROTEIN_MODEL=""
-POOL=""
+DRUG_POOL=""
+PROTEIN_POOL=""
 MAX_SMI_LEN=""
 MAX_PROT_LEN=""
 ENCODE_BATCH_SIZE=""
@@ -36,7 +37,8 @@ usage() {
   sed -n '2,10p' "$0"
   echo "Flags: --dataset --fold --cmd train|experiment --epochs --note --partition --time --mem --cpus"
   echo "       --env-name --data-dir --runs-root --extra-args"
-  echo "       --drug-model --protein-model --pool mean|cls --max-smi-len --max-prot-len --encode-batch-size"
+  echo "       --drug-model --protein-model --drug-pool mean|cls --protein-pool mean|max"
+  echo "       --max-smi-len --max-prot-len --encode-batch-size"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -56,7 +58,8 @@ while [[ $# -gt 0 ]]; do
     --extra-args) EXTRA_ARGS="$2"; shift 2 ;;
     --drug-model) DRUG_MODEL="$2"; shift 2 ;;
     --protein-model) PROTEIN_MODEL="$2"; shift 2 ;;
-    --pool) POOL="$2"; shift 2 ;;
+    --drug-pool) DRUG_POOL="$2"; shift 2 ;;
+    --protein-pool) PROTEIN_POOL="$2"; shift 2 ;;
     --max-smi-len) MAX_SMI_LEN="$2"; shift 2 ;;
     --max-prot-len) MAX_PROT_LEN="$2"; shift 2 ;;
     --encode-batch-size) ENCODE_BATCH_SIZE="$2"; shift 2 ;;
@@ -70,7 +73,8 @@ done
 ENCODER_ARGS=""
 [[ -n "$DRUG_MODEL" ]] && ENCODER_ARGS="$ENCODER_ARGS --drug-model $DRUG_MODEL"
 [[ -n "$PROTEIN_MODEL" ]] && ENCODER_ARGS="$ENCODER_ARGS --protein-model $PROTEIN_MODEL"
-[[ -n "$POOL" ]] && ENCODER_ARGS="$ENCODER_ARGS --pool $POOL"
+[[ -n "$DRUG_POOL" ]] && ENCODER_ARGS="$ENCODER_ARGS --drug-pool $DRUG_POOL"
+[[ -n "$PROTEIN_POOL" ]] && ENCODER_ARGS="$ENCODER_ARGS --protein-pool $PROTEIN_POOL"
 [[ -n "$MAX_SMI_LEN" ]] && ENCODER_ARGS="$ENCODER_ARGS --max-smi-len $MAX_SMI_LEN"
 [[ -n "$MAX_PROT_LEN" ]] && ENCODER_ARGS="$ENCODER_ARGS --max-prot-len $MAX_PROT_LEN"
 [[ -n "$ENCODE_BATCH_SIZE" ]] && ENCODER_ARGS="$ENCODER_ARGS --encode-batch-size $ENCODE_BATCH_SIZE"

@@ -80,8 +80,27 @@ def mean_pool(
     return total / mask.sum(dim=1).clamp(min=1.0)
 
 
+def max_pool(
+    hidden: torch.Tensor,
+    attention_mask: torch.Tensor,
+    special_tokens_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Per-dimension max over token states, ignoring padding and CLS/EOS/SEP."""
+    keep = attention_mask.to(torch.bool)
+    if special_tokens_mask is not None:
+        keep = keep & ~special_tokens_mask.to(torch.bool)
+    keep = keep.unsqueeze(-1)
+    filled = hidden.masked_fill(~keep, torch.finfo(hidden.dtype).min)
+    pooled = filled.amax(dim=1)
+    # An input with no content tokens would otherwise pool to -inf.
+    return torch.where(keep.any(dim=1), pooled, torch.zeros_like(pooled))
+
+
 def cls_pool(hidden: torch.Tensor) -> torch.Tensor:
     return hidden[:, 0]
+
+
+POOLS = ("mean", "max", "cls")
 
 
 def content_length_cap(config: Any, tokenizer: Any, n_special: int) -> Optional[int]:
@@ -127,8 +146,8 @@ def encode_texts(
     from transformers import AutoModel, AutoTokenizer
     from transformers import logging as hf_logging
 
-    if pool not in {"mean", "cls"}:
-        raise ValueError(f"Unknown pool {pool!r}. Choose from ['mean', 'cls']")
+    if pool not in POOLS:
+        raise ValueError(f"Unknown pool {pool!r}. Choose from {list(POOLS)}")
 
     # The MLM checkpoints have no pooler; we never use it, so skip that warning.
     hf_logging.set_verbosity_error()
@@ -182,6 +201,8 @@ def encode_texts(
             hidden = model(**enc).last_hidden_state
         if pool == "mean":
             vec = mean_pool(hidden, enc["attention_mask"], special.to(torch_device))
+        elif pool == "max":
+            vec = max_pool(hidden, enc["attention_mask"], special.to(torch_device))
         else:
             vec = cls_pool(hidden)
         out[batch_idx] = vec.float().cpu().numpy()

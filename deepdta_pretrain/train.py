@@ -33,7 +33,7 @@ from deepdta_pretrain.data import (
     paper_splits,
 )
 from deepdta_pretrain.embeddings import ENCODERS, encode_texts, encoder_defaults
-from deepdta_pretrain.model import DeepDTAPretrain
+from deepdta_pretrain.model import HIDDEN, DeepDTAPretrain
 
 
 def _add_encoder_args(parser: argparse.ArgumentParser) -> None:
@@ -41,7 +41,8 @@ def _add_encoder_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--data-dir", type=str, default=None)
     parser.add_argument("--drug-model", type=str, default=ENCODERS["drug"]["hf_name"])
     parser.add_argument("--protein-model", type=str, default=ENCODERS["protein"]["hf_name"])
-    parser.add_argument("--pool", type=str, default="mean", choices=["mean", "cls"])
+    parser.add_argument("--drug-pool", type=str, default="mean", choices=["mean", "cls"])
+    parser.add_argument("--protein-pool", type=str, default="mean", choices=["mean", "max"])
     parser.add_argument("--max-smi-len", type=int, default=ENCODERS["drug"]["max_len"])
     parser.add_argument("--max-prot-len", type=int, default=ENCODERS["protein"]["max_len"])
     parser.add_argument("--encode-batch-size", type=int, default=8)
@@ -55,7 +56,6 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--proj-dim", type=int, default=256, help="0 disables the projection")
     parser.add_argument("--dropout", type=float, default=0.1)
 
 
@@ -93,7 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
     pred_p.add_argument("--device", type=str, default="auto")
     pred_p.add_argument("--drug-model", type=str, default=None)
     pred_p.add_argument("--protein-model", type=str, default=None)
-    pred_p.add_argument("--pool", type=str, default=None, choices=["mean", "cls"])
+    pred_p.add_argument("--drug-pool", type=str, default=None, choices=["mean", "cls"])
+    pred_p.add_argument("--protein-pool", type=str, default=None, choices=["mean", "max"])
     pred_p.add_argument("--max-smi-len", type=int, default=None)
     pred_p.add_argument("--max-prot-len", type=int, default=None)
 
@@ -109,7 +110,8 @@ def _load_dataset(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
         args.data_dir,
         drug_model=args.drug_model,
         protein_model=args.protein_model,
-        pool=args.pool,
+        drug_pool=args.drug_pool,
+        protein_pool=args.protein_pool,
         max_smi_len=args.max_smi_len,
         max_prot_len=args.max_prot_len,
         device=args.encode_device,
@@ -122,7 +124,6 @@ def _make_model(args: argparse.Namespace, spec: dict[str, Any]) -> DeepDTAPretra
     return DeepDTAPretrain(
         drug_dim=spec["drug_dim"],
         prot_dim=spec["protein_dim"],
-        proj_dim=args.proj_dim,
         dropout=args.dropout,
     )
 
@@ -131,7 +132,7 @@ def _model_cfg(args: argparse.Namespace, spec: dict[str, Any]) -> dict[str, Any]
     return {
         "drug_dim": spec["drug_dim"],
         "prot_dim": spec["protein_dim"],
-        "proj_dim": args.proj_dim,
+        "hidden": list(HIDDEN),
         "dropout": args.dropout,
     }
 
@@ -164,11 +165,12 @@ def _restore_model(
     checkpoint: dict[str, Any],
 ) -> DeepDTAPretrain:
     cfg = dict(_model_cfg(args, spec))
-    cfg.update(checkpoint.get("model_cfg") or {})
+    saved = checkpoint.get("model_cfg") or {}
+    cfg.update({k: v for k, v in saved.items() if k in cfg})
     model = DeepDTAPretrain(
         drug_dim=cfg["drug_dim"],
         prot_dim=cfg["prot_dim"],
-        proj_dim=cfg["proj_dim"],
+        hidden=cfg["hidden"],
         dropout=cfg["dropout"],
     )
     state = checkpoint["model_state"] if "model_state" in checkpoint else checkpoint
@@ -287,23 +289,24 @@ def cmd_predict(args: argparse.Namespace) -> None:
     prot_spec = encoder_defaults("protein")
     drug_model = _pick("drug", "hf_name", args.drug_model, drug_spec["hf_name"])
     prot_model = _pick("protein", "hf_name", args.protein_model, prot_spec["hf_name"])
-    pool = _pick("drug", "pool", args.pool, "mean")
+    drug_pool = _pick("drug", "pool", args.drug_pool, "mean")
+    prot_pool = _pick("protein", "pool", args.protein_pool, "mean")
     max_smi_len = _pick("drug", "max_len", args.max_smi_len, drug_spec["max_len"])
     max_prot_len = _pick("protein", "max_len", args.max_prot_len, prot_spec["max_len"])
 
     drug_emb, _ = encode_texts(
-        [args.smiles], hf_name=drug_model, max_len=max_smi_len, pool=pool,
+        [args.smiles], hf_name=drug_model, max_len=max_smi_len, pool=drug_pool,
         device=device, batch_size=1, show_progress=False,
     )
     prot_emb, _ = encode_texts(
-        [args.protein], hf_name=prot_model, max_len=max_prot_len, pool=pool,
+        [args.protein], hf_name=prot_model, max_len=max_prot_len, pool=prot_pool,
         device=device, batch_size=1, show_progress=False,
     )
 
     model = DeepDTAPretrain(
         drug_dim=cfg.get("drug_dim", drug_emb.shape[1]),
         prot_dim=cfg.get("prot_dim", prot_emb.shape[1]),
-        proj_dim=cfg.get("proj_dim", 256),
+        hidden=cfg.get("hidden", HIDDEN),
         dropout=cfg.get("dropout", 0.1),
     )
     state = ckpt["model_state"] if "model_state" in ckpt else ckpt

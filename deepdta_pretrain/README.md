@@ -21,30 +21,50 @@ Chỉ cần 68 + 442 forward pass cho Davis thay vì 30,056 × 2. Cache Davis m�
 ## Kiến trúc
 
 ```
-SMILES ──► ChemBERTa (frozen) ──► mean pool ──► 384-d ──► LayerNorm ──► Linear 256 ──┐
-                                                                                     ├─► concat 512
-protein ─► ESM-2 (frozen) ──────► mean pool ──► 480-d ──► LayerNorm ──► Linear 256 ──┘
-                                                                                     │
-                                              1024 ─► Dropout ─► 1024 ─► Dropout ─► 512 ─► 1
+Protein seq              SMILES
+     │                      │
+     ▼                      ▼
+  ESM-2 (frozen)      ChemBERTa (frozen)
+     │                      │
+     ▼                      ▼
+[L, 480] embeddings    [L, 384] embeddings
+     │                      │
+     ▼                      ▼
+Mean/Max Pooling       Mean/CLS Pooling
+     │                      │
+     ▼                      ▼
+Protein vector [480]   Ligand vector [384]
+     │                      │
+     └──────────┬───────────┘
+                ▼
+          Concatenate [864]
+                ▼
+     FC(512) → ReLU → Dropout
+                ▼
+     FC(256) → ReLU → Dropout
+                ▼
+            FC(1) → Affinity
 ```
 
-- **mean pool** bỏ cả padding và special token (CLS/EOS). Nếu mean luôn cả padding thì protein ngắn bị loãng embedding.
-- **LayerNorm mỗi nhánh** là cần thiết: activation của ESM-2 và ChemBERTa khác scale, concat thô sẽ để một nhánh áp đảo gradient.
-- **Projection** về 256-d mỗi nhánh cân bằng hai modality; `--proj-dim 0` để tắt và concat trực tiếp 864-d.
-- **Head giữ nguyên hình dạng DeepDTA gốc** (1024 → 1024 → 512 → 1) để so sánh công bằng với baseline CNN.
+- **Pooling bỏ cả padding và special token** (CLS/EOS/SEP). Nếu pool luôn cả padding thì protein ngắn bị loãng embedding; `max` pool cũng mask padding về `-inf` trước khi lấy max.
+- **Concat trực tiếp 864-d**, không LayerNorm và không projection — vector vào MLP giữ nguyên chiều gốc của hai PLM.
+- **Head nhỏ hơn DeepDTA gốc** (512 → 256 → 1 thay vì 1024 → 1024 → 512 → 1): 0.57M tham số huấn luyện so với 2.3M. Feature đã là đại diện chất lượng cao và cố định, nên head lớn chủ yếu làm overfit.
+- Chọn pooling độc lập cho từng nhánh: `--protein-pool {mean,max}` và `--drug-pool {mean,cls}`.
 
 ## So với `deepdta/`
 
 | | `deepdta` (CNN–CNN) | `deepdta_pretrain` |
 | --- | --- | --- |
-| Drug encoder | Embedding 128 + 3× Conv1d + max-pool → 96-d | ChemBERTa mean-pool → 384-d, frozen |
-| Protein encoder | Embedding 128 + 3× Conv1d + max-pool → 96-d | ESM-2 mean-pool → 480-d, frozen |
+| Drug encoder | Embedding 128 + 3× Conv1d + max-pool → 96-d | ChemBERTa mean/CLS-pool → 384-d, frozen |
+| Protein encoder | Embedding 128 + 3× Conv1d + max-pool → 96-d | ESM-2 mean/max-pool → 480-d, frozen |
 | Tokenize | charset thủ công (`CHARISOSMISET` 64 ký tự, `CHARPROTSET` 25 ký tự) | tokenizer HuggingFace |
-| Input MLP | 192-d | 864-d (hoặc 512-d khi bật projection) |
-| Head / loss / optimizer / fold / metrics | — | **không đổi**, dùng lại code `deepdta/` |
+| Input MLP | 192-d | 864-d |
+| Head | 1024 → 1024 → 512 → 1 | 512 → 256 → 1 |
+| Tham số huấn luyện | ~2.3M (kể cả CNN) | 0.57M |
+| Loss / optimizer / fold / metrics | — | **không đổi**, dùng lại code `deepdta/` |
 | `shuffle` khi train | `False` | `True` |
 
-Head, `train_one_run`, `Logger`, `set_seed`, metrics (CI / MSE / rm² / AUPR) và fold splits đều import trực tiếp từ `deepdta`, không copy lại. Thay đổi duy nhất trong `deepdta/` là thêm tham số `weight_decay=0.0` vào `train_one_run` (mặc định không đổi hành vi baseline).
+`train_one_run`, `Logger`, `set_seed`, khởi tạo trọng số kiểu Keras, metrics (CI / MSE / rm² / AUPR) và fold splits đều import trực tiếp từ `deepdta`, không copy lại. Thay đổi duy nhất trong `deepdta/` là thêm tham số `weight_decay=0.0` vào `train_one_run` (mặc định không đổi hành vi baseline).
 
 `shuffle=True` là khác biệt có chủ ý: với MLP trên feature tĩnh, batch không shuffle sẽ bị gom theo thứ tự drug và làm gradient lệch.
 
@@ -81,10 +101,10 @@ Bước `precompute` là tùy chọn — `train` tự build cache nếu chưa c�
 | --- | --- | --- |
 | `--protein-model` | `facebook/esm2_t12_35M_UR50D` | đổi sang `facebook/esm2_t33_650M_UR50D` (1280-d) nếu có GPU |
 | `--drug-model` | `DeepChem/ChemBERTa-77M-MLM` | |
-| `--pool` | `mean` | `cls` cho ChemBERTa thường kém hơn vì chỉ pretrain MLM |
+| `--drug-pool` | `mean` | `mean` hoặc `cls`; `cls` cho ChemBERTa thường kém hơn vì chỉ pretrain MLM |
+| `--protein-pool` | `mean` | `mean` hoặc `max` |
 | `--max-prot-len` | `1022` | giới hạn của ESM-2 (`max_position_embeddings=1026`) |
-| `--max-smi-len` | `512` | giới hạn của ChemBERTa |
-| `--proj-dim` | `256` | `0` để concat trực tiếp |
+| `--max-smi-len` | `512` | tự clamp về 510 theo `max_position_embeddings` của ChemBERTa |
 | `--encode-device` | `auto` | device cho bước encode, tách khỏi `--device` của train |
 | `--encode-batch-size` | `8` | tăng lên nếu GPU rộng |
 | `--rebuild-cache` | off | tính lại kể cả khi cache đã có |
