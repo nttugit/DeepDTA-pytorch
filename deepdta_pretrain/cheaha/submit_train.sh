@@ -42,7 +42,7 @@ usage() {
   echo "       --env-name --data-dir --runs-root --extra-args"
   echo "       --drug-model --protein-model (accept preset aliases: esm2-35m|esm2-150m|esm2-650m,"
   echo "                                     chemberta-mlm|chemberta-mtr)"
-  echo "       --drug-pool mean|cls --protein-pool mean|max"
+  echo "       --drug-pool mean|cls --protein-pool mean|max|attention"
   echo "       --long-strategy truncate|window --drug-fingerprint none|ecfp4"
   echo "       --max-smi-len --max-prot-len --encode-batch-size"
 }

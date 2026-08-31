@@ -59,7 +59,12 @@ def _add_encoder_args(parser: argparse.ArgumentParser) -> None:
         help=f"HuggingFace id or preset alias ({presets})",
     )
     parser.add_argument("--drug-pool", type=str, default="mean", choices=["mean", "cls"])
-    parser.add_argument("--protein-pool", type=str, default="mean", choices=["mean", "max"])
+    parser.add_argument(
+        "--protein-pool",
+        type=str,
+        default="attention",
+        choices=["mean", "max", "attention"],
+    )
     parser.add_argument("--max-smi-len", type=int, default=ENCODERS["drug"]["max_len"])
     parser.add_argument("--max-prot-len", type=int, default=ENCODERS["protein"]["max_len"])
     parser.add_argument(
@@ -88,14 +93,14 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--dropout", type=float, default=0.2)
+    parser.add_argument("--dropout", type=float, default=0.35)
 
 
 def _add_optim(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--patience", type=int, default=15)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--lr-schedule", type=str, default="plateau", choices=list(LR_SCHEDULES))
     parser.add_argument("--grad-clip", type=float, default=1.0, help="0 disables clipping")
     parser.add_argument(
@@ -134,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     pred_p.add_argument("--drug-model", type=str, default=None)
     pred_p.add_argument("--protein-model", type=str, default=None)
     pred_p.add_argument("--drug-pool", type=str, default=None, choices=["mean", "cls"])
-    pred_p.add_argument("--protein-pool", type=str, default=None, choices=["mean", "max"])
+    pred_p.add_argument("--protein-pool", type=str, default=None, choices=["mean", "max", "attention"])
     pred_p.add_argument("--max-smi-len", type=int, default=None)
     pred_p.add_argument("--max-prot-len", type=int, default=None)
     pred_p.add_argument("--long-strategy", type=str, default=None, choices=list(LONG_STRATEGIES))

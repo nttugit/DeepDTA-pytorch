@@ -127,7 +127,30 @@ def cls_pool(hidden: torch.Tensor) -> torch.Tensor:
     return hidden[:, 0]
 
 
-POOLS = ("mean", "max", "cls")
+def attention_pool(
+    hidden: torch.Tensor,
+    attention_mask: torch.Tensor,
+    special_tokens_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Self-attention pool: mean of content tokens as query, softmax over residues.
+
+    Up-weights binding-relevant residues instead of diluting them like mean pooling.
+    Parameter-free so it fits the frozen precompute cache workflow.
+    """
+    mask = attention_mask.to(hidden.dtype)
+    if special_tokens_mask is not None:
+        mask = mask * (1.0 - special_tokens_mask.to(hidden.dtype))
+    keep = mask.unsqueeze(-1)
+    denom = mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+    query = (hidden * keep).sum(dim=1) / denom
+    scale = hidden.size(-1) ** -0.5
+    scores = (hidden * query.unsqueeze(1)).sum(dim=-1) * scale
+    scores = scores.masked_fill(mask == 0, torch.finfo(scores.dtype).min)
+    weights = torch.softmax(scores, dim=-1)
+    return (hidden * weights.unsqueeze(-1)).sum(dim=1)
+
+
+POOLS = ("mean", "max", "cls", "attention")
 
 
 def content_length_cap(config: Any, tokenizer: Any, n_special: int) -> Optional[int]:
@@ -166,6 +189,8 @@ def _apply_pool(
         return mean_pool(hidden, attention_mask, special)
     if pool == "max":
         return max_pool(hidden, attention_mask, special)
+    if pool == "attention":
+        return attention_pool(hidden, attention_mask, special)
     return cls_pool(hidden)
 
 

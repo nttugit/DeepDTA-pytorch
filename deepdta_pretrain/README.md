@@ -53,14 +53,14 @@ Protein vector [480]   Ligand vector [384]
 - **LayerNorm ngay sau pooling, riêng cho từng nhánh**: activation của ESM-2 và ChemBERTa khác scale, concat thô sẽ để một nhánh áp đảo gradient. Chuẩn hóa riêng nên mỗi nhánh vào MLP với mean 0 / var 1 độc lập, và `weight`/`bias` học được cho phép model tự điều chỉnh lại tỉ lệ giữa hai modality.
 - **Không projection** — concat giữ nguyên 864-d, đúng chiều gốc của hai PLM.
 - **Head nhỏ hơn DeepDTA gốc** (512 → 256 → 1 thay vì 1024 → 1024 → 512 → 1): 0.58M tham số huấn luyện so với 2.3M. Feature đã là đại diện chất lượng cao và cố định, nên head lớn chủ yếu làm overfit.
-- Chọn pooling độc lập cho từng nhánh: `--protein-pool {mean,max}` và `--drug-pool {mean,cls}`.
+- Chọn pooling độc lập cho từng nhánh: `--protein-pool {mean,max,attention}` và `--drug-pool {mean,cls}`. `attention` dùng self-attention pool (mean của content token làm query, softmax theo residue) — nhấn mạnh vùng binding thay vì mean pool loãng tín hiệu trên chuỗi dài.
 
 ## So với `deepdta/`
 
 | | `deepdta` (CNN–CNN) | `deepdta_pretrain` |
 | --- | --- | --- |
 | Drug encoder | Embedding 128 + 3× Conv1d + max-pool → 96-d | ChemBERTa mean/CLS-pool → 384-d, frozen |
-| Protein encoder | Embedding 128 + 3× Conv1d + max-pool → 96-d | ESM-2 mean/max-pool → 480-d, frozen |
+| Protein encoder | Embedding 128 + 3× Conv1d + max-pool → 96-d | ESM-2 mean/max/attention-pool → 480-d, frozen |
 | Tokenize | charset thủ công (`CHARISOSMISET` 64 ký tự, `CHARPROTSET` 25 ký tự) | tokenizer HuggingFace |
 | Chuẩn hóa trước concat | không | `LayerNorm` riêng cho từng nhánh |
 | Input MLP | 192-d | 864-d |
@@ -136,7 +136,7 @@ Encoder:
 | `--protein-model` | `facebook/esm2_t12_35M_UR50D` | nhận cả alias: `esm2-35m`, `esm2-150m` (640-d), `esm2-650m` (1280-d) |
 | `--drug-model` | `DeepChem/ChemBERTa-77M-MLM` | alias: `chemberta-mlm`, `chemberta-mtr` |
 | `--drug-pool` | `mean` | `mean` hoặc `cls`; thử `cls` khi dùng MTR vì nó có huấn luyện qua CLS |
-| `--protein-pool` | `mean` | `mean` hoặc `max` |
+| `--protein-pool` | `attention` | `mean`, `max`, hoặc `attention` (self-attention pool, khuyến nghị cho protein dài) |
 | `--long-strategy` | `truncate` | `window` để giữ toàn bộ protein dài, xem phần dưới |
 | `--drug-fingerprint` | `none` | `ecfp4` để concat Morgan 2048-bit vào vector ChemBERTa (cần `rdkit`) |
 | `--max-prot-len` | `1022` | giới hạn của ESM-2 (`max_position_embeddings=1026`) |
@@ -151,8 +151,9 @@ Huấn luyện:
 | --- | --- | --- |
 | `--lr-schedule` | `plateau` | `none` \| `plateau` (factor 0.5, patience 5, min 1e-5) \| `cosine` |
 | `--normalize-target` | on | z-score theo train split; `--no-normalize-target` để tắt |
-| `--weight-decay` | `1e-4` | |
-| `--dropout` | `0.2` | |
+| `--weight-decay` | `5e-4` | |
+| `--dropout` | `0.35` | |
+| `--patience` | `10` | early stopping trên val (giảm từ 15 để hạn chế overfit) |
 | `--grad-clip` | `1.0` | `0` để tắt |
 
 Cache nằm ở `cache/embeddings/<dataset>/<kind>_<model>_<pool>_<max_len>[_window].npz`, fingerprint ở `drug_ecfp4_<bits>.npz`. Key file gồm cả tên model nên đổi checkpoint sẽ sinh cache mới, không lẫn; hậu tố `_window` bị bỏ khi `truncate` để cache cũ vẫn dùng được. Mỗi file lưu kèm `keys` (id drug/protein) và bị từ chối khi load nếu thứ tự entity không còn khớp dataset.
@@ -248,7 +249,7 @@ Script trong `deepdta_pretrain/cheaha/`. Login node chỉ dùng để `cd`, `git
 
 ```bash
 module reset && module load Anaconda3
-cd ~/src/BindingAffinityPrediction-DeepDTA
+cd ~/src/DeepDTA-pytorch
 bash deepdta_pretrain/cheaha/setup_env.sh
 ```
 
@@ -261,7 +262,7 @@ Env mặc định `deepdta-plm` (torch CUDA + transformers).
 ```bash
 module reset && module load Anaconda3 && conda activate deepdta-plm
 export HF_HOME="$USER_DATA/hf_cache"
-cd ~/src/BindingAffinityPrediction-DeepDTA
+cd ~/src/DeepDTA-pytorch
 python -m deepdta_pretrain precompute --dataset kiba --encode-device cpu
 python -m deepdta_pretrain precompute --dataset davis --encode-device cpu
 ```
