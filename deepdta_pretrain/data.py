@@ -25,6 +25,7 @@ from deepdta.data import (
     resolve_data_path,
 )
 from deepdta_pretrain.embeddings import (
+    DEFAULT_POOL_HEADS,
     encoder_defaults,
     get_or_build,
     get_or_build_fingerprint,
@@ -72,6 +73,7 @@ class PLMData:
         device: Union[torch.device, str, None] = "auto",
         encode_batch_size: int = 8,
         rebuild_cache: bool = False,
+        pool_heads: int = DEFAULT_POOL_HEADS,
     ):
         self.dataset = dataset
         self.dataset_dir = Path(dataset_path)
@@ -104,6 +106,7 @@ class PLMData:
             device=device,
             batch_size=encode_batch_size,
             rebuild=rebuild_cache,
+            pool_heads=pool_heads,
         )
         if drug_fingerprint and drug_fingerprint != "none":
             fp, fp_meta = get_or_build_fingerprint(
@@ -130,6 +133,7 @@ class PLMData:
             rebuild=rebuild_cache,
             # Only proteins overflow the encoder; SMILES top out near 94 tokens.
             long_strategy=long_strategy,
+            pool_heads=pool_heads,
         )
 
         rows, cols = np.where(~np.isnan(self.Y))
@@ -212,6 +216,7 @@ def load_dataset(
     device: Union[torch.device, str, None] = "auto",
     encode_batch_size: int = 8,
     rebuild_cache: bool = False,
+    pool_heads: int = DEFAULT_POOL_HEADS,
 ) -> tuple[PLMData, dict[str, Any]]:
     if name not in DATASETS:
         raise ValueError(f"Unknown dataset {name!r}. Choose from {list(DATASETS)}")
@@ -238,6 +243,7 @@ def load_dataset(
         device=device,
         encode_batch_size=encode_batch_size,
         rebuild_cache=rebuild_cache,
+        pool_heads=pool_heads,
     )
     spec["drug_dim"] = raw.drug_dim
     spec["protein_dim"] = raw.protein_dim

@@ -40,7 +40,7 @@ class DeepDTAPretrain(nn.Module):
         prev = drug_dim + prot_dim
         for width in hidden:
             layers.append(nn.Linear(prev, width))
-            layers.append(nn.ReLU())
+            layers.append(nn.GELU())
             layers.append(nn.Dropout(dropout))
             prev = width
         self.mlp = nn.Sequential(*layers)

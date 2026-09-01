@@ -34,6 +34,7 @@ from deepdta_pretrain.data import (
     paper_splits,
 )
 from deepdta_pretrain.embeddings import (
+    DEFAULT_POOL_HEADS,
     ENCODERS,
     FINGERPRINTS,
     LONG_STRATEGIES,
@@ -58,12 +59,23 @@ def _add_encoder_args(parser: argparse.ArgumentParser) -> None:
         "--protein-model", type=str, default=ENCODERS["protein"]["hf_name"],
         help=f"HuggingFace id or preset alias ({presets})",
     )
-    parser.add_argument("--drug-pool", type=str, default="mean", choices=["mean", "cls"])
+    parser.add_argument(
+        "--drug-pool",
+        type=str,
+        default="mh_attention",
+        choices=["mean", "cls", "attention", "mh_attention"],
+    )
     parser.add_argument(
         "--protein-pool",
         type=str,
-        default="attention",
-        choices=["mean", "max", "attention"],
+        default="mh_attention",
+        choices=["mean", "max", "attention", "mh_attention"],
+    )
+    parser.add_argument(
+        "--pool-heads",
+        type=int,
+        default=DEFAULT_POOL_HEADS,
+        help="Heads for attention/mh_attention pooling (drug and protein)",
     )
     parser.add_argument("--max-smi-len", type=int, default=ENCODERS["drug"]["max_len"])
     parser.add_argument("--max-prot-len", type=int, default=ENCODERS["protein"]["max_len"])
@@ -138,8 +150,19 @@ def build_parser() -> argparse.ArgumentParser:
     pred_p.add_argument("--device", type=str, default="auto")
     pred_p.add_argument("--drug-model", type=str, default=None)
     pred_p.add_argument("--protein-model", type=str, default=None)
-    pred_p.add_argument("--drug-pool", type=str, default=None, choices=["mean", "cls"])
-    pred_p.add_argument("--protein-pool", type=str, default=None, choices=["mean", "max", "attention"])
+    pred_p.add_argument(
+        "--drug-pool",
+        type=str,
+        default=None,
+        choices=["mean", "cls", "attention", "mh_attention"],
+    )
+    pred_p.add_argument(
+        "--protein-pool",
+        type=str,
+        default=None,
+        choices=["mean", "max", "attention", "mh_attention"],
+    )
+    pred_p.add_argument("--pool-heads", type=int, default=None)
     pred_p.add_argument("--max-smi-len", type=int, default=None)
     pred_p.add_argument("--max-prot-len", type=int, default=None)
     pred_p.add_argument("--long-strategy", type=str, default=None, choices=list(LONG_STRATEGIES))
@@ -166,6 +189,7 @@ def _load_dataset(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
         device=args.encode_device,
         encode_batch_size=args.encode_batch_size,
         rebuild_cache=args.rebuild_cache,
+        pool_heads=args.pool_heads,
     )
 
 
@@ -254,7 +278,7 @@ def _warn_encoder_mismatch(
     if not saved:
         return
     for kind in ("drug", "protein"):
-        for key in ("hf_name", "pool", "max_len", "long_strategy"):
+        for key in ("hf_name", "pool", "pool_heads", "max_len", "long_strategy"):
             was = (saved.get(kind) or {}).get(key)
             now = (current.get(kind) or {}).get(key)
             if was is not None and was != now:
@@ -384,14 +408,18 @@ def cmd_predict(args: argparse.Namespace) -> None:
     max_smi_len = _pick("drug", "max_len", args.max_smi_len, drug_spec["max_len"])
     max_prot_len = _pick("protein", "max_len", args.max_prot_len, prot_spec["max_len"])
     long_strategy = _pick("protein", "long_strategy", args.long_strategy, "truncate")
+    pool_heads = _pick("protein", "pool_heads", args.pool_heads, DEFAULT_POOL_HEADS)
+    if (saved.get("drug") or {}).get("pool_heads") is not None:
+        pool_heads = int((saved.get("drug") or {}).get("pool_heads"))
 
     drug_emb, _ = encode_texts(
         [args.smiles], hf_name=drug_model, max_len=max_smi_len, pool=drug_pool,
-        device=device, batch_size=1, show_progress=False,
+        device=device, batch_size=1, show_progress=False, pool_heads=pool_heads,
     )
     prot_emb, _ = encode_texts(
         [args.protein], hf_name=prot_model, max_len=max_prot_len, pool=prot_pool,
-        device=device, batch_size=1, show_progress=False, long_strategy=long_strategy,
+        device=device, batch_size=1, show_progress=False,
+        long_strategy=long_strategy, pool_heads=pool_heads,
     )
 
     # The checkpoint was trained on ChemBERTa+ECFP, so rebuild the same layout.

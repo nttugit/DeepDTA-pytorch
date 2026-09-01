@@ -35,6 +35,7 @@ MAX_PROT_LEN=""
 ENCODE_BATCH_SIZE=""
 LONG_STRATEGY=""
 DRUG_FINGERPRINT=""
+POOL_HEADS=""
 
 usage() {
   sed -n '2,11p' "$0"
@@ -42,7 +43,8 @@ usage() {
   echo "       --env-name --data-dir --runs-root --extra-args"
   echo "       --drug-model --protein-model (accept preset aliases: esm2-35m|esm2-150m|esm2-650m,"
   echo "                                     chemberta-mlm|chemberta-mtr)"
-  echo "       --drug-pool mean|cls --protein-pool mean|max|attention"
+  echo "       --drug-pool mean|cls|attention|mh_attention"
+  echo "       --protein-pool mean|max|attention|mh_attention --pool-heads 4"
   echo "       --long-strategy truncate|window --drug-fingerprint none|ecfp4"
   echo "       --max-smi-len --max-prot-len --encode-batch-size"
 }
@@ -71,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --encode-batch-size) ENCODE_BATCH_SIZE="$2"; shift 2 ;;
     --long-strategy) LONG_STRATEGY="$2"; shift 2 ;;
     --drug-fingerprint) DRUG_FINGERPRINT="$2"; shift 2 ;;
+    --pool-heads) POOL_HEADS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown flag: $1" >&2; usage; exit 1 ;;
   esac
@@ -88,6 +91,7 @@ ENCODER_ARGS=""
 [[ -n "$ENCODE_BATCH_SIZE" ]] && ENCODER_ARGS="$ENCODER_ARGS --encode-batch-size $ENCODE_BATCH_SIZE"
 [[ -n "$LONG_STRATEGY" ]] && ENCODER_ARGS="$ENCODER_ARGS --long-strategy $LONG_STRATEGY"
 [[ -n "$DRUG_FINGERPRINT" ]] && ENCODER_ARGS="$ENCODER_ARGS --drug-fingerprint $DRUG_FINGERPRINT"
+[[ -n "$POOL_HEADS" ]] && ENCODER_ARGS="$ENCODER_ARGS --pool-heads $POOL_HEADS"
 
 if [[ -z "$RUNS_ROOT" ]]; then
   if [[ -n "${USER_DATA:-}" ]]; then

@@ -42,9 +42,9 @@ Protein vector [480]   Ligand vector [384]
                 ▼
           Concatenate [864]
                 ▼
-     FC(512) → ReLU → Dropout
+     FC(512) → GELU → Dropout
                 ▼
-     FC(256) → ReLU → Dropout
+     FC(256) → GELU → Dropout
                 ▼
             FC(1) → Affinity
 ```
@@ -53,14 +53,14 @@ Protein vector [480]   Ligand vector [384]
 - **LayerNorm ngay sau pooling, riêng cho từng nhánh**: activation của ESM-2 và ChemBERTa khác scale, concat thô sẽ để một nhánh áp đảo gradient. Chuẩn hóa riêng nên mỗi nhánh vào MLP với mean 0 / var 1 độc lập, và `weight`/`bias` học được cho phép model tự điều chỉnh lại tỉ lệ giữa hai modality.
 - **Không projection** — concat giữ nguyên 864-d, đúng chiều gốc của hai PLM.
 - **Head nhỏ hơn DeepDTA gốc** (512 → 256 → 1 thay vì 1024 → 1024 → 512 → 1): 0.58M tham số huấn luyện so với 2.3M. Feature đã là đại diện chất lượng cao và cố định, nên head lớn chủ yếu làm overfit.
-- Chọn pooling độc lập cho từng nhánh: `--protein-pool {mean,max,attention}` và `--drug-pool {mean,cls}`. `attention` dùng self-attention pool (mean của content token làm query, softmax theo residue) — nhấn mạnh vùng binding thay vì mean pool loãng tín hiệu trên chuỗi dài.
+- Chọn pooling độc lập cho từng nhánh: `--drug-pool {mean,cls,attention,mh_attention}` và `--protein-pool {mean,max,attention,mh_attention}`. `attention`/`mh_attention` dùng **multi-head self-attention pool** (mặc định K=4 qua `--pool-heads`): mean token làm query theo từng head, softmax theo residue — nhấn mạnh vùng quan trọng thay vì mean pool loãng tín hiệu.
 
 ## So với `deepdta/`
 
 | | `deepdta` (CNN–CNN) | `deepdta_pretrain` |
 | --- | --- | --- |
-| Drug encoder | Embedding 128 + 3× Conv1d + max-pool → 96-d | ChemBERTa mean/CLS-pool → 384-d, frozen |
-| Protein encoder | Embedding 128 + 3× Conv1d + max-pool → 96-d | ESM-2 mean/max/attention-pool → 480-d, frozen |
+| Drug encoder | Embedding 128 + 3× Conv1d + max-pool → 96-d | ChemBERTa mean/CLS/mh-attention-pool → 384-d, frozen |
+| Protein encoder | Embedding 128 + 3× Conv1d + max-pool → 96-d | ESM-2 mean/max/mh-attention-pool → 480-d, frozen |
 | Tokenize | charset thủ công (`CHARISOSMISET` 64 ký tự, `CHARPROTSET` 25 ký tự) | tokenizer HuggingFace |
 | Chuẩn hóa trước concat | không | `LayerNorm` riêng cho từng nhánh |
 | Input MLP | 192-d | 864-d |
@@ -135,8 +135,9 @@ Encoder:
 | --- | --- | --- |
 | `--protein-model` | `facebook/esm2_t12_35M_UR50D` | nhận cả alias: `esm2-35m`, `esm2-150m` (640-d), `esm2-650m` (1280-d) |
 | `--drug-model` | `DeepChem/ChemBERTa-77M-MLM` | alias: `chemberta-mlm`, `chemberta-mtr` |
-| `--drug-pool` | `mean` | `mean` hoặc `cls`; thử `cls` khi dùng MTR vì nó có huấn luyện qua CLS |
-| `--protein-pool` | `attention` | `mean`, `max`, hoặc `attention` (self-attention pool, khuyến nghị cho protein dài) |
+| `--drug-pool` | `mh_attention` | `mean`, `cls`, `attention`, `mh_attention` |
+| `--protein-pool` | `mh_attention` | `mean`, `max`, `attention`, `mh_attention` |
+| `--pool-heads` | `4` | Số head cho `attention`/`mh_attention` (drug + protein) |
 | `--long-strategy` | `truncate` | `window` để giữ toàn bộ protein dài, xem phần dưới |
 | `--drug-fingerprint` | `none` | `ecfp4` để concat Morgan 2048-bit vào vector ChemBERTa (cần `rdkit`) |
 | `--max-prot-len` | `1022` | giới hạn của ESM-2 (`max_position_embeddings=1026`) |
@@ -156,7 +157,7 @@ Huấn luyện:
 | `--patience` | `10` | early stopping trên val (giảm từ 15 để hạn chế overfit) |
 | `--grad-clip` | `1.0` | `0` để tắt |
 
-Cache nằm ở `cache/embeddings/<dataset>/<kind>_<model>_<pool>_<max_len>[_window].npz`, fingerprint ở `drug_ecfp4_<bits>.npz`. Key file gồm cả tên model nên đổi checkpoint sẽ sinh cache mới, không lẫn; hậu tố `_window` bị bỏ khi `truncate` để cache cũ vẫn dùng được. Mỗi file lưu kèm `keys` (id drug/protein) và bị từ chối khi load nếu thứ tự entity không còn khớp dataset.
+Cache nằm ở `cache/embeddings/<dataset>/<kind>_<model>_<pool_tag>_<max_len>[_window].npz` với `pool_tag=mh_attention_h4` cho attention pools, fingerprint ở `drug_ecfp4_<bits>.npz`. Key file gồm cả tên model nên đổi checkpoint sẽ sinh cache mới, không lẫn; hậu tố `_window` bị bỏ khi `truncate` để cache cũ vẫn dùng được. Mỗi file lưu kèm `keys` (id drug/protein) và bị từ chối khi load nếu thứ tự entity không còn khớp dataset.
 
 ### Chuẩn hóa target
 

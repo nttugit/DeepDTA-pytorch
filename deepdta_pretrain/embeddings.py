@@ -127,30 +127,48 @@ def cls_pool(hidden: torch.Tensor) -> torch.Tensor:
     return hidden[:, 0]
 
 
-def attention_pool(
-    hidden: torch.Tensor,
+DEFAULT_POOL_HEADS = 4
+
+POOLS = ("mean", "max", "cls", "attention", "mh_attention")
+ATTENTION_POOLS = frozenset({"attention", "mh_attention"})
+
+
+def multihead_attention_pool(
+    hidden: torch.Tensor,          # [B, L, D]
     attention_mask: torch.Tensor,
     special_tokens_mask: Optional[torch.Tensor] = None,
+    num_heads: int = 4,
 ) -> torch.Tensor:
-    """Self-attention pool: mean of content tokens as query, softmax over residues.
+    B, L, D = hidden.shape
+    if D % num_heads != 0:
+        raise ValueError(f"D={D} must be divisible by num_heads={num_heads}")
 
-    Up-weights binding-relevant residues instead of diluting them like mean pooling.
-    Parameter-free so it fits the frozen precompute cache workflow.
-    """
+    d_head = D // num_heads
     mask = attention_mask.to(hidden.dtype)
     if special_tokens_mask is not None:
         mask = mask * (1.0 - special_tokens_mask.to(hidden.dtype))
-    keep = mask.unsqueeze(-1)
-    denom = mask.sum(dim=1, keepdim=True).clamp(min=1.0)
-    query = (hidden * keep).sum(dim=1) / denom
-    scale = hidden.size(-1) ** -0.5
-    scores = (hidden * query.unsqueeze(1)).sum(dim=-1) * scale
-    scores = scores.masked_fill(mask == 0, torch.finfo(scores.dtype).min)
-    weights = torch.softmax(scores, dim=-1)
-    return (hidden * weights.unsqueeze(-1)).sum(dim=1)
+
+    # [B, L, K, d_head]
+    h = hidden.view(B, L, num_heads, d_head)
+    m = mask.unsqueeze(-1).unsqueeze(-1)  # [B, L, 1, 1]
+
+    denom = m.sum(dim=1).clamp(min=1.0)               # [B, 1, 1]
+    query = (h * m).sum(dim=1) / denom                # [B, K, d_head]
+
+    scale = d_head ** -0.5
+    scores = (h * query.unsqueeze(1)).sum(dim=-1) * scale   # [B, L, K]
+    scores = scores.masked_fill(mask.unsqueeze(-1) == 0, torch.finfo(scores.dtype).min)
+    weights = torch.softmax(scores, dim=1)                  # [B, L, K]
+
+    pooled = (h * weights.unsqueeze(-1)).sum(dim=1)         # [B, K, d_head]
+    return pooled.reshape(B, D)
 
 
-POOLS = ("mean", "max", "cls", "attention")
+def _pool_cache_tag(pool: str, pool_heads: int = DEFAULT_POOL_HEADS) -> str:
+    """Distinct cache filenames for multi-head attention pools."""
+    if pool in ATTENTION_POOLS:
+        return f"mh_attention_h{pool_heads}"
+    return pool
 
 
 def content_length_cap(config: Any, tokenizer: Any, n_special: int) -> Optional[int]:
@@ -184,13 +202,16 @@ def _apply_pool(
     attention_mask: torch.Tensor,
     special: torch.Tensor,
     pool: str,
+    pool_heads: int = DEFAULT_POOL_HEADS,
 ) -> torch.Tensor:
     if pool == "mean":
         return mean_pool(hidden, attention_mask, special)
     if pool == "max":
         return max_pool(hidden, attention_mask, special)
-    if pool == "attention":
-        return attention_pool(hidden, attention_mask, special)
+    if pool in ATTENTION_POOLS:
+        return multihead_attention_pool(
+            hidden, attention_mask, special, num_heads=pool_heads
+        )
     return cls_pool(hidden)
 
 
@@ -205,6 +226,7 @@ def _encode_truncate(
     show_progress: bool,
     raw_lengths: np.ndarray,
     desc: str,
+    pool_heads: int = DEFAULT_POOL_HEADS,
 ) -> np.ndarray:
     order = np.argsort(-raw_lengths, kind="stable")
     out = np.zeros((len(texts), model.config.hidden_size), dtype=np.float32)
@@ -226,7 +248,9 @@ def _encode_truncate(
         enc = {k: v.to(torch_device) for k, v in enc.items()}
         with torch.inference_mode():
             hidden = model(**enc).last_hidden_state
-        vec = _apply_pool(hidden, enc["attention_mask"], special.to(torch_device), pool)
+        vec = _apply_pool(
+            hidden, enc["attention_mask"], special.to(torch_device), pool, pool_heads
+        )
         out[batch_idx] = vec.float().cpu().numpy()
     return out
 
@@ -254,6 +278,7 @@ def _encode_window(
     batch_size: int,
     show_progress: bool,
     desc: str,
+    pool_heads: int = DEFAULT_POOL_HEADS,
 ) -> tuple[np.ndarray, dict[str, int]]:
     """Pool each window separately, then average per text weighted by window length.
 
@@ -299,7 +324,11 @@ def _encode_window(
         with torch.inference_mode():
             hidden = model(**enc).last_hidden_state
         vec = _apply_pool(
-            hidden, enc["attention_mask"], torch.from_numpy(special).to(torch_device), pool
+            hidden,
+            enc["attention_mask"],
+            torch.from_numpy(special).to(torch_device),
+            pool,
+            pool_heads,
         )
         vec = vec.float().cpu().numpy().astype(np.float64)
         for j, chunk_idx in enumerate(batch_idx):
@@ -327,6 +356,7 @@ def encode_texts(
     batch_size: int = 8,
     show_progress: bool = True,
     long_strategy: str = "truncate",
+    pool_heads: int = DEFAULT_POOL_HEADS,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Run a frozen HuggingFace encoder over `texts` and pool to one vector each.
 
@@ -338,6 +368,8 @@ def encode_texts(
 
     if pool not in POOLS:
         raise ValueError(f"Unknown pool {pool!r}. Choose from {list(POOLS)}")
+    if pool in ATTENTION_POOLS and pool_heads < 1:
+        raise ValueError(f"pool_heads must be >= 1, got {pool_heads}")
     if long_strategy not in LONG_STRATEGIES:
         raise ValueError(
             f"Unknown long_strategy {long_strategy!r}. Choose from {list(LONG_STRATEGIES)}"
@@ -378,19 +410,20 @@ def encode_texts(
     if long_strategy == "window":
         out, extra = _encode_window(
             texts, tokenizer, model, torch_device, max_len, pool,
-            batch_size, show_progress, desc,
+            batch_size, show_progress, desc, pool_heads,
         )
         n_truncated = 0
     else:
         out = _encode_truncate(
             texts, tokenizer, model, torch_device, max_length, pool,
-            batch_size, show_progress, raw_lengths, desc,
+            batch_size, show_progress, raw_lengths, desc, pool_heads,
         )
 
     stats = {
         "hf_name": hf_name,
         "dim": int(model.config.hidden_size),
         "pool": pool,
+        "pool_heads": int(pool_heads) if pool in ATTENTION_POOLS else None,
         "max_len": int(max_len),
         "max_len_requested": requested_max_len,
         "max_length_with_special": int(max_length),
@@ -420,11 +453,13 @@ def cache_path(
     max_len: int,
     cache_root: Union[str, Path, None] = None,
     long_strategy: str = "truncate",
+    pool_heads: int = DEFAULT_POOL_HEADS,
 ) -> Path:
     root = Path(cache_root) if cache_root is not None else CACHE_ROOT
     # Omitted for "truncate" so caches built before windowing existed stay valid.
     suffix = "" if long_strategy == "truncate" else f"_{long_strategy}"
-    return root / dataset / f"{kind}_{_slug(hf_name)}_{pool}_{max_len}{suffix}.npz"
+    pool_tag = _pool_cache_tag(pool, pool_heads)
+    return root / dataset / f"{kind}_{_slug(hf_name)}_{pool_tag}_{max_len}{suffix}.npz"
 
 
 def build_cache(
@@ -438,6 +473,7 @@ def build_cache(
     batch_size: int = 8,
     show_progress: bool = True,
     long_strategy: str = "truncate",
+    pool_heads: int = DEFAULT_POOL_HEADS,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     emb, stats = encode_texts(
         texts,
@@ -448,6 +484,7 @@ def build_cache(
         batch_size=batch_size,
         show_progress=show_progress,
         long_strategy=long_strategy,
+        pool_heads=pool_heads,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -490,11 +527,14 @@ def get_or_build(
     cache_root: Union[str, Path, None] = None,
     show_progress: bool = True,
     long_strategy: str = "truncate",
+    pool_heads: int = DEFAULT_POOL_HEADS,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     spec = encoder_defaults(kind)
     hf_name = resolve_model_name(hf_name, kind) or spec["hf_name"]
     max_len = spec["max_len"] if max_len is None else max_len
-    path = cache_path(dataset, kind, hf_name, pool, max_len, cache_root, long_strategy)
+    path = cache_path(
+        dataset, kind, hf_name, pool, max_len, cache_root, long_strategy, pool_heads
+    )
 
     if path.exists() and not rebuild:
         return load_cache(path, keys)
@@ -511,6 +551,7 @@ def get_or_build(
         batch_size=batch_size,
         show_progress=show_progress,
         long_strategy=long_strategy,
+        pool_heads=pool_heads,
     )
 
 
