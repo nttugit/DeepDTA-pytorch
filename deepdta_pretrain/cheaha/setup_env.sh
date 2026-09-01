@@ -35,8 +35,10 @@ unset PYTHONPATH
 export PYTHONNOUSERSITE=1
 
 python -m pip install --upgrade pip
-python -m pip install torch --index-url https://download.pytorch.org/whl/cu121
-python -m pip install transformers tqdm
+# ChemBERTa ships pytorch_model.bin; transformers >= 4.52 needs torch >= 2.6 to
+# load .bin files. cu124 wheels are the supported path for torch 2.6+ on Cheaha.
+python -m pip install "torch>=2.6" --index-url https://download.pytorch.org/whl/cu124
+python -m pip install "transformers>=4.30,<5" safetensors tqdm
 
 # $HOME has a small quota on Cheaha and HuggingFace caches model weights there
 # by default. Point HF_HOME at $USER_DATA for every job (see train.sbatch).

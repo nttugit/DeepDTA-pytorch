@@ -347,6 +347,30 @@ def _encode_window(
     }
 
 
+def _load_hf_model(hf_name: str, torch_device: torch.device) -> Any:
+    """Load a frozen HF encoder, avoiding pytorch_model.bin when torch < 2.6.
+
+    transformers >= 4.52 blocks ``torch.load`` on ``.bin`` weights unless
+    torch >= 2.6 (CVE-2025-32434). Prefer ``safetensors`` when the hub provides
+    them; otherwise require a recent torch.
+    """
+    from transformers import AutoModel
+
+    try:
+        return AutoModel.from_pretrained(hf_name, use_safetensors=True).to(torch_device)
+    except (ValueError, OSError) as exc:
+        ver = tuple(int(x) for x in torch.__version__.split(".")[:2])
+        if ver < (2, 6):
+            raise ValueError(
+                f"Cannot load {hf_name!r}: safetensors unavailable and torch "
+                f"{torch.__version__} < 2.6 cannot load pytorch_model.bin. "
+                "Fix: pip install 'torch>=2.6' --index-url "
+                "https://download.pytorch.org/whl/cu124  (or cu126), or "
+                "pip install 'transformers==4.51.3'."
+            ) from exc
+        return AutoModel.from_pretrained(hf_name, use_safetensors=False).to(torch_device)
+
+
 def encode_texts(
     texts: Sequence[str],
     hf_name: str,
@@ -363,7 +387,7 @@ def encode_texts(
     Returns the `[N, dim]` float32 embeddings plus stats (token lengths, how many
     inputs were truncated or split into windows).
     """
-    from transformers import AutoModel, AutoTokenizer
+    from transformers import AutoTokenizer
     from transformers import logging as hf_logging
 
     if pool not in POOLS:
@@ -379,7 +403,7 @@ def encode_texts(
     hf_logging.set_verbosity_error()
     torch_device = _resolve_device(device)
     tokenizer = AutoTokenizer.from_pretrained(hf_name)
-    model = AutoModel.from_pretrained(hf_name).to(torch_device)
+    model = _load_hf_model(hf_name, torch_device)
     model.eval()
 
     n_special = tokenizer.num_special_tokens_to_add(pair=False)

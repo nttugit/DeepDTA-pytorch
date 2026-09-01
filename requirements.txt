@@ -1,12 +1,13 @@
 # Runtime on Cheaha: torch + numpy only. Everything else is optional.
 numpy>=1.21
-torch>=2.0
+torch>=2.6
 
 # Required only by deepdta_pretrain/ (ESM-2 + ChemBERTa embeddings).
-# ChemBERTa ships weights as pytorch_model.bin only, and transformers >= 4.52
-# refuses to torch.load .bin files unless torch >= 2.6 (CVE-2025-32434).
-# With an older torch, pin transformers==4.51.3.
+# ChemBERTa may ship pytorch_model.bin only; transformers >= 4.52 refuses to
+# torch.load .bin unless torch >= 2.6 (CVE-2025-32434). encode_texts prefers
+# safetensors when available; otherwise pin transformers==4.51.3 as a fallback.
 transformers>=4.30,<5
+safetensors>=0.4.0
 
 # Required only by deepdta_pretrain --drug-fingerprint ecfp4.
 rdkit>=2023.3
